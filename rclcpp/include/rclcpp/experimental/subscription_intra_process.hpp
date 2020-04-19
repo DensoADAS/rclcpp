@@ -73,13 +73,13 @@ public:
     const std::string & topic_name,
     rmw_qos_profile_t qos_profile,
     rclcpp::IntraProcessBufferType buffer_type,
-    std::shared_ptr<SerializationBase> serializer)
-  : SubscriptionIntraProcessBase(topic_name, qos_profile),
+    std::shared_ptr<SerializationBase> serializer,
+    bool is_serialized = false)
+  : SubscriptionIntraProcessBase(topic_name, qos_profile, is_serialized),
     any_callback_(callback), serializer_(serializer)
   {
     if (!std::is_same<MessageT, CallbackMessageT>::value &&
-      !std::is_same<MessageT, rclcpp::SerializedMessage>::value &&
-      !std::is_same<CallbackMessageT, rcl_serialized_message_t>::value)
+      !std::is_base_of<rcl_serialized_message_t, MessageT>::value)
     {
       throw std::runtime_error("SubscriptionIntraProcess wrong callback type");
     }
@@ -170,15 +170,15 @@ private:
     msg_info.from_intra_process = true;
 
     ConstMessageSharedPtr msg = buffer_->consume_shared();
-    auto serialized_msg =
-      serializer_->serialize_message(reinterpret_cast<const void *>(msg.get()));
+    auto serialized_msg = std::make_shared<rclcpp::SerializedMessage>();
+    serializer_->serialize_message(reinterpret_cast<const void *>(msg.get()), serialized_msg.get());
 
-    if (nullptr == serialized_msg) {
+    if (0u == serialized_msg->buffer_length) {
       throw std::runtime_error("Subscription intra-process could not serialize message");
     }
 
     if (any_callback_.use_take_shared_method()) {
-      any_callback_.dispatch_intra_process(serialized_msg, msg_info);
+      any_callback_.dispatch_intra_process(std::static_pointer_cast<rcl_serialized_message_t>(serialized_msg), msg_info);
     } else {
       throw std::runtime_error(
               "Subscription intra-process for serialized "
@@ -243,8 +243,8 @@ private:
       throw std::runtime_error("Subscription intra-process can't handle unserialized messages");
     }
 
-    ConstMessageSharedPtr serialized_container = buffer_->consume_shared();
-    if (nullptr == serialized_container) {
+    ConstMessageSharedPtr serialized_message = buffer_->consume_shared();
+    if (nullptr == serialized_message) {
       throw std::runtime_error("Subscription intra-process could not get serialized message");
     }
 
@@ -254,13 +254,13 @@ private:
     if (any_callback_.use_take_shared_method()) {
       CallbackMessageSharedPtr msg = construct_unique();
       serializer_->deserialize_message(
-        serialized_container.get(),
+        serialized_message.get(),
         reinterpret_cast<void *>(msg.get()));
       any_callback_.dispatch_intra_process(msg, msg_info);
     } else {
       CallbackMessageUniquePtr msg = construct_unique();
       serializer_->deserialize_message(
-        serialized_container.get(),
+        serialized_message.get(),
         reinterpret_cast<void *>(msg.get()));
       any_callback_.dispatch_intra_process(std::move(msg), msg_info);
     }
